@@ -75,15 +75,15 @@ class AdbSessionManagerTest {
     @Test
     fun testWmSizeResultModel() {
         val wmResult = WmSizeResult(
-            executedCommand = "wm size 720x1280",
+            executedCommand = "wm size 720x1600",
             applyOutput = "",
-            verificationOutput = "Physical size: 1080x2400\nOverride size: 720x1280",
+            verificationOutput = "Physical size: 1080x2400\nOverride size: 720x1600",
             isVerified = true
         )
 
-        assertEquals("wm size 720x1280", wmResult.executedCommand)
+        assertEquals("wm size 720x1600", wmResult.executedCommand)
         assertTrue(wmResult.isVerified)
-        assertTrue(wmResult.verificationOutput.contains("720x1280"))
+        assertTrue(wmResult.verificationOutput.contains("720x1600"))
     }
 
     @Test
@@ -96,7 +96,7 @@ class AdbSessionManagerTest {
             port = 64990
         )
 
-        val res = sessionManager.setScreenSizeOnDiscoveredService(service, 720, 1280)
+        val res = sessionManager.setScreenSizeOnDiscoveredService(service, 720, 1600)
         assertTrue(res.isFailure)
         assertTrue(sessionManager.sessionState.value is AdbSessionState.Error)
     }

@@ -293,13 +293,13 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
 
                 addLog("✅ Authenticated TLS ADB session established")
 
-                // Step 4: Executing wm size 720x1280...
+                // Step 4: Executing wm size 720x1600...
                 withContext(Dispatchers.Main) {
-                    currentStep = "Executing wm size 720x1280..."
+                    currentStep = "Executing wm size 720x1600..."
                 }
-                addLog("Executing wm size 720x1280...")
+                addLog("Executing wm size 720x1600...")
 
-                val sizeResult = sessionManager.setScreenSizeAndVerify(connectHost, connectPort, 720, 1280)
+                val sizeResult = sessionManager.setScreenSizeAndVerify(connectHost, connectPort, 720, 1600)
                 if (sizeResult.isFailure) {
                     val err = sizeResult.exceptionOrNull()?.message ?: "wm size command failed"
                     addLog("❌ $err")
@@ -315,7 +315,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                 val wmRes = sizeResult.getOrThrow()
                 addLog("Stdout: ${wmRes.applyOutput.ifBlank { "(empty)" }}")
                 addLog("Verification: ${wmRes.verificationOutput}")
-                addLog("✅ Screen resized to 720x1280 successfully!")
+                addLog("✅ Screen resized to 720x1600 successfully!")
 
                 withContext(Dispatchers.Main) {
                     finalResult = wmRes

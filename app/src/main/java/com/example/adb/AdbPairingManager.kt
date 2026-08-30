@@ -38,14 +38,26 @@ class AdbPairingManager(
 
         init {
             ensureBouncyCastleProvider()
+            ensureConscryptProvider()
         }
 
         fun ensureBouncyCastleProvider() {
             try {
                 // Remove Android's restricted system provider and register the full BC library provider
                 Security.removeProvider("BC")
-                Security.insertProviderAt(BouncyCastleProvider(), 1)
+                Security.insertProviderAt(org.bouncycastle.jce.provider.BouncyCastleProvider(), 1)
             } catch (_: Exception) {}
+        }
+
+        fun ensureConscryptProvider() {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    org.lsposed.hiddenapibypass.HiddenApiBypass.addHiddenApiExemptions("")
+                }
+                Security.insertProviderAt(org.conscrypt.Conscrypt.newProvider(), 1)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to bypass hidden API or insert Conscrypt", e)
+            }
         }
     }
 

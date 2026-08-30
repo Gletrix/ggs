@@ -59,10 +59,22 @@ class AdbSessionManager(
         private const val TAG = "AdbSessionManager"
         private const val DEFAULT_CONNECT_TIMEOUT_MS = 10000L
         const val DEFAULT_SCREEN_WIDTH = 720
-        const val DEFAULT_SCREEN_HEIGHT = 1280
+        const val DEFAULT_SCREEN_HEIGHT = 1600
 
         init {
             AdbKeyStorageManager.ensureBouncyCastleProvider()
+            ensureConscryptProvider()
+        }
+
+        fun ensureConscryptProvider() {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    org.lsposed.hiddenapibypass.HiddenApiBypass.addHiddenApiExemptions("")
+                }
+                java.security.Security.insertProviderAt(org.conscrypt.Conscrypt.newProvider(), 1)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to bypass hidden API or insert Conscrypt", e)
+            }
         }
     }
 
