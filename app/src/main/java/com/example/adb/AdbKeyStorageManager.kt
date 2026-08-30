@@ -40,9 +40,15 @@ class AdbKeyStorageManager(
         private const val RSA_KEY_SIZE = 2048
 
         init {
-            if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-                Security.addProvider(BouncyCastleProvider())
-            }
+            ensureBouncyCastleProvider()
+        }
+
+        fun ensureBouncyCastleProvider() {
+            try {
+                // Remove Android's restricted system provider and register the full BC library provider
+                Security.removeProvider("BC")
+                Security.insertProviderAt(BouncyCastleProvider(), 1)
+            } catch (_: Exception) {}
         }
     }
 
@@ -144,6 +150,7 @@ class AdbKeyStorageManager(
     }
 
     private fun generateSelfSignedCertificate(keyPair: KeyPair): X509Certificate {
+        ensureBouncyCastleProvider()
         val now = System.currentTimeMillis()
         val startDate = Date(now - 24 * 60 * 60 * 1000L) // 1 day before
         val expiryDate = Date(now + 30L * 365 * 24 * 60 * 60 * 1000L) // 30 years
@@ -160,13 +167,14 @@ class AdbKeyStorageManager(
             keyPair.public
         )
 
-        val contentSigner = JcaContentSignerBuilder("SHA256WithRSAEncryption")
-            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+        val bcProvider = BouncyCastleProvider()
+        val contentSigner = JcaContentSignerBuilder("SHA256withRSA")
+            .setProvider(bcProvider)
             .build(keyPair.private)
 
         val certHolder = certBuilder.build(contentSigner)
         return JcaX509CertificateConverter()
-            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+            .setProvider(bcProvider)
             .getCertificate(certHolder)
     }
 
@@ -176,4 +184,3 @@ class AdbKeyStorageManager(
         val certificate: X509Certificate
     )
 }
-

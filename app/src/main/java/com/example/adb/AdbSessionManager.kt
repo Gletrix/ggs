@@ -60,6 +60,10 @@ class AdbSessionManager(
         private const val DEFAULT_CONNECT_TIMEOUT_MS = 10000L
         const val DEFAULT_SCREEN_WIDTH = 720
         const val DEFAULT_SCREEN_HEIGHT = 1280
+
+        init {
+            AdbKeyStorageManager.ensureBouncyCastleProvider()
+        }
     }
 
     private val _sessionState = MutableStateFlow<AdbSessionState>(AdbSessionState.Disconnected)

@@ -8,10 +8,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
+import java.security.Security
 import javax.net.ssl.SSLException
 
 /**
@@ -33,6 +35,18 @@ class AdbPairingManager(
     companion object {
         private const val TAG = "AdbPairingManager"
         private const val DEFAULT_CLIENT_NAME = "ADB Screen Resizer"
+
+        init {
+            ensureBouncyCastleProvider()
+        }
+
+        fun ensureBouncyCastleProvider() {
+            try {
+                // Remove Android's restricted system provider and register the full BC library provider
+                Security.removeProvider("BC")
+                Security.insertProviderAt(BouncyCastleProvider(), 1)
+            } catch (_: Exception) {}
+        }
     }
 
     private val _pairingState = MutableStateFlow<PairingState>(PairingState.Idle)
@@ -52,6 +66,7 @@ class AdbPairingManager(
         pairingCode: String,
         clientName: String = getDeviceClientName()
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        ensureBouncyCastleProvider()
         val trimmedCode = pairingCode.trim()
         if (trimmedCode.length != 6 || !trimmedCode.all { it.isDigit() }) {
             val errorMsg = "Invalid pairing code: must be exactly 6 numeric digits"
