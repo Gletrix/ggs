@@ -11,7 +11,9 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,11 +21,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -31,23 +44,43 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.adb.AdbKeyStorageManager
+import com.example.adb.AdbMdnsDiscoveryManager
+import com.example.adb.AdbPairingManager
+import com.example.adb.AdbServiceType
+import com.example.adb.AdbSessionManager
+import com.example.adb.DiscoveredAdbService
+import com.example.adb.WmSizeResult
 import com.example.ui.AdbOverlayService
 import com.example.ui.PairingCodeEntryCard
 import com.example.ui.PairingDialogActivity
 import com.example.ui.theme.MyApplicationTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -125,10 +158,183 @@ class MainActivity : ComponentActivity() {
 fun PairingDemoScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+
+    val keyStorageManager = remember { AdbKeyStorageManager(context) }
+    val mdnsDiscoveryManager = remember { AdbMdnsDiscoveryManager(context) }
+    val pairingManager = remember { AdbPairingManager(keyStorageManager) }
+    val sessionManager = remember { AdbSessionManager(keyStorageManager) }
 
     var hasOverlayPermission by remember { mutableStateOf(MainActivity.checkOverlayPermission(context)) }
     var lastSubmittedCode by remember { mutableStateOf<String?>(null) }
     var showInlineCard by remember { mutableStateOf(false) }
+
+    var isExecuting by remember { mutableStateOf(false) }
+    var currentStep by remember { mutableStateOf("Ready") }
+    var executionSuccess by remember { mutableStateOf<Boolean?>(null) }
+    var finalResult by remember { mutableStateOf<WmSizeResult?>(null) }
+    val logs = remember { mutableStateListOf<String>() }
+
+    fun addLog(message: String) {
+        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        logs.add("[$time] $message")
+        Log.i("MainActivity", "[$time] $message")
+    }
+
+    fun executePairingAndResizeFlow(code: String) {
+        lastSubmittedCode = code
+        isExecuting = true
+        executionSuccess = null
+        finalResult = null
+        logs.clear()
+
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                addLog("Starting flow with pairing code: $code")
+
+                // Step 1: Discovering ADB services via mDNS...
+                withContext(Dispatchers.Main) {
+                    currentStep = "Discovering ADB services via mDNS..."
+                }
+                addLog("Discovering ADB services via mDNS...")
+                mdnsDiscoveryManager.clearDiscoveredServices()
+                mdnsDiscoveryManager.startDiscovery(discoverPairing = true, discoverConnect = true)
+
+                // Locate pairing service
+                var pairingService: DiscoveredAdbService? = null
+                val initialPairing = mdnsDiscoveryManager.discoveryState.value.pairingServices.firstOrNull()
+                if (initialPairing != null) {
+                    pairingService = initialPairing
+                } else {
+                    pairingService = withTimeoutOrNull(20000L) {
+                        mdnsDiscoveryManager.serviceEvents.first { it.serviceType == AdbServiceType.PAIRING }
+                    }
+                }
+
+                if (pairingService == null) {
+                    val err = "No _adb-tls-pairing service discovered. Ensure 'Pair device with pairing code' dialog is open on screen."
+                    addLog("❌ $err")
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: mDNS pairing service discovery timeout"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    mdnsDiscoveryManager.stopDiscovery()
+                    return@launch
+                }
+
+                val pairHost = pairingService.hostAddress ?: pairingService.host?.hostAddress ?: "127.0.0.1"
+                val pairPort = pairingService.port
+                addLog("Found pairing service at $pairHost:$pairPort")
+
+                // Step 2: Pairing with code...
+                withContext(Dispatchers.Main) {
+                    currentStep = "Pairing with code..."
+                }
+                addLog("Pairing with code on $pairHost:$pairPort...")
+
+                val pairResult = pairingManager.pair(pairHost, pairPort, code)
+                if (pairResult.isFailure) {
+                    val err = pairResult.exceptionOrNull()?.message ?: "Pairing handshake failed"
+                    addLog("❌ $err")
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: Pairing error"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    mdnsDiscoveryManager.stopDiscovery()
+                    return@launch
+                }
+
+                addLog("✅ Pairing successful with $pairHost:$pairPort")
+
+                // Step 3: Connecting to ADB session...
+                withContext(Dispatchers.Main) {
+                    currentStep = "Connecting to ADB session..."
+                }
+                addLog("Connecting to ADB session...")
+
+                var connectService: DiscoveredAdbService? = mdnsDiscoveryManager.discoveryState.value.connectServices.firstOrNull()
+                if (connectService == null) {
+                    connectService = withTimeoutOrNull(20000L) {
+                        mdnsDiscoveryManager.serviceEvents.first { it.serviceType == AdbServiceType.CONNECT }
+                    }
+                }
+
+                if (connectService == null) {
+                    val err = "No _adb-tls-connect service discovered. Ensure Wireless Debugging is active."
+                    addLog("❌ $err")
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: mDNS connect service discovery timeout"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    mdnsDiscoveryManager.stopDiscovery()
+                    return@launch
+                }
+
+                val connectHost = connectService.hostAddress ?: connectService.host?.hostAddress ?: "127.0.0.1"
+                val connectPort = connectService.port
+                addLog("Found connect service at $connectHost:$connectPort")
+
+                val connResult = sessionManager.connect(connectHost, connectPort)
+                if (connResult.isFailure) {
+                    val err = connResult.exceptionOrNull()?.message ?: "ADB connection failed"
+                    addLog("❌ $err")
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: Connection error"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    mdnsDiscoveryManager.stopDiscovery()
+                    return@launch
+                }
+
+                addLog("✅ Authenticated TLS ADB session established")
+
+                // Step 4: Executing wm size 720x1280...
+                withContext(Dispatchers.Main) {
+                    currentStep = "Executing wm size 720x1280..."
+                }
+                addLog("Executing wm size 720x1280...")
+
+                val sizeResult = sessionManager.setScreenSizeAndVerify(connectHost, connectPort, 720, 1280)
+                if (sizeResult.isFailure) {
+                    val err = sizeResult.exceptionOrNull()?.message ?: "wm size command failed"
+                    addLog("❌ $err")
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: Command error"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    mdnsDiscoveryManager.stopDiscovery()
+                    return@launch
+                }
+
+                val wmRes = sizeResult.getOrThrow()
+                addLog("Stdout: ${wmRes.applyOutput.ifBlank { "(empty)" }}")
+                addLog("Verification: ${wmRes.verificationOutput}")
+                addLog("✅ Screen resized to 720x1280 successfully!")
+
+                withContext(Dispatchers.Main) {
+                    finalResult = wmRes
+                    currentStep = "Completed Successfully"
+                    isExecuting = false
+                    executionSuccess = true
+                }
+                mdnsDiscoveryManager.stopDiscovery()
+            } catch (e: Exception) {
+                addLog("❌ Unexpected error: ${e.localizedMessage ?: e.javaClass.simpleName}")
+                withContext(Dispatchers.Main) {
+                    currentStep = "Failed: Exception"
+                    isExecuting = false
+                    executionSuccess = false
+                }
+                mdnsDiscoveryManager.stopDiscovery()
+            }
+        }
+    }
 
     // Re-check overlay permission whenever activity resumes
     DisposableEffect(lifecycleOwner) {
@@ -143,40 +349,47 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Set callback on overlay service
+    // Set callback on overlay service & dialog activity
     DisposableEffect(Unit) {
         AdbOverlayService.onPairingCodeSubmittedCallback = { code ->
             Log.i("MainActivity", "Pairing code received via System Overlay: $code")
-            lastSubmittedCode = code
+            executePairingAndResizeFlow(code)
         }
         PairingDialogActivity.onPairingCodeSubmittedCallback = { code ->
             Log.i("MainActivity", "Pairing code received via Dialog Activity: $code")
-            lastSubmittedCode = code
+            executePairingAndResizeFlow(code)
         }
         onDispose {
             AdbOverlayService.onPairingCodeSubmittedCallback = null
             PairingDialogActivity.onPairingCodeSubmittedCallback = null
+            mdnsDiscoveryManager.stopDiscovery()
+            sessionManager.close()
         }
     }
 
     Column(
-        modifier = modifier.padding(20.dp),
+        modifier = modifier
+            .verticalScroll(scrollState)
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Top
     ) {
         Text(
-            text = "ADB Wireless Pairing",
-            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-            modifier = Modifier.testTag("app_title")
+            text = "ADB Wireless Pairing & Screen Resizer",
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("app_title")
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Overlay Permission Status Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 8.dp)
+                .padding(vertical = 4.dp)
                 .testTag("permission_status_card"),
             colors = CardDefaults.cardColors(
                 containerColor = if (hasOverlayPermission) {
@@ -186,22 +399,31 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                 }
             )
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = if (hasOverlayPermission) "Overlay Permission: Granted" else "Overlay Permission: Required",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (hasOverlayPermission) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onErrorContainer
-                    }
-                )
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (hasOverlayPermission) Icons.Default.CheckCircle else Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = if (hasOverlayPermission) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (hasOverlayPermission) "Overlay Permission: Granted" else "Overlay Permission: Required",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (hasOverlayPermission) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        }
+                    )
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = if (hasOverlayPermission) {
-                        "System overlay is ready to float over Wireless debugging settings."
+                        "Floating overlay is ready to enter PIN over Settings > Wireless debugging."
                     } else {
-                        "Required to display the pairing PIN floating over Settings > Developer options."
+                        "Grant overlay permission so the pairing card floats over Developer Options."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (hasOverlayPermission) {
@@ -213,20 +435,20 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         if (showInlineCard) {
             PairingCodeEntryCard(
                 onPairSubmit = { code ->
-                    Log.i("MainActivity", "Pairing code submitted from inline UI: $code")
-                    lastSubmittedCode = code
+                    showInlineCard = false
+                    executePairingAndResizeFlow(code)
                 },
                 onDismiss = {
                     showInlineCard = false
                 }
             )
         } else {
-            // Button to Launch System Overlay
+            // Action Buttons
             Button(
                 onClick = {
                     if (MainActivity.checkOverlayPermission(context)) {
@@ -236,66 +458,228 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                         MainActivity.requestOverlayPermission(context)
                     }
                 },
+                enabled = !isExecuting,
                 modifier = Modifier
-                    .fillMaxWidth(0.85f)
+                    .fillMaxWidth(0.9f)
                     .testTag("launch_overlay_button")
             ) {
                 Text(if (hasOverlayPermission) "Launch Floating Overlay" else "Grant Overlay Permission")
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Open Developer Settings directly
-            FilledTonalButton(
-                onClick = {
-                    MainActivity.openDeveloperSettings(context)
-                },
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .testTag("open_developer_settings_button")
+            Row(
+                modifier = Modifier.fillMaxWidth(0.9f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Open Developer Options")
-            }
+                FilledTonalButton(
+                    onClick = {
+                        MainActivity.openDeveloperSettings(context)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("open_developer_settings_button")
+                ) {
+                    Text("Developer Options", style = MaterialTheme.typography.labelMedium)
+                }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Show Inline Card option
-            OutlinedButton(
-                onClick = { showInlineCard = true },
-                modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .testTag("show_pairing_card_button")
-            ) {
-                Text("Show Inline Pairing UI")
+                OutlinedButton(
+                    onClick = { showInlineCard = true },
+                    enabled = !isExecuting,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("show_pairing_card_button")
+                ) {
+                    Text("Inline PIN Card", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        lastSubmittedCode?.let { code ->
+        // Real-Time Progress / Status Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("status_indicator_card"),
+            colors = CardDefaults.cardColors(
+                containerColor = when (executionSuccess) {
+                    true -> MaterialTheme.colorScheme.tertiaryContainer
+                    false -> MaterialTheme.colorScheme.errorContainer
+                    null -> MaterialTheme.colorScheme.surfaceContainerHigh
+                }
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Current Status",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (isExecuting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = currentStep,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = when (executionSuccess) {
+                        true -> MaterialTheme.colorScheme.onTertiaryContainer
+                        false -> MaterialTheme.colorScheme.onErrorContainer
+                        null -> MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier.testTag("current_step_text")
+                )
+
+                if (isExecuting) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .testTag("progress_indicator")
+                    )
+                }
+
+                lastSubmittedCode?.let { code ->
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Submitted PIN: $code",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("submitted_code_text")
+                    )
+                }
+            }
+        }
+
+        // Final Result Card (wm size verification)
+        finalResult?.let { res ->
+            Spacer(modifier = Modifier.height(12.dp))
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("submitted_code_card"),
+                    .testTag("final_result_card"),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
                 )
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Command Verified Successfully",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Executed: ${res.executedCommand}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "Verification: ${res.verificationOutput}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Real-Time Log Console
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("logs_console_card"),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
+            ),
+            border = CardDefaults.outlinedCardBorder()
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Last Code Submitted",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                        text = "Execution Logs",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface
                     )
-                    Text(
-                        text = code,
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.testTag("submitted_code_text")
-                    )
+                    if (logs.isNotEmpty()) {
+                        Text(
+                            text = "${logs.size} entries",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .padding(10.dp)
+                ) {
+                    if (logs.isEmpty()) {
+                        Text(
+                            text = "No logs yet. Launch overlay or submit PIN to begin.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            logs.forEach { logLine ->
+                                Text(
+                                    text = logLine,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp
+                                    ),
+                                    color = if (logLine.contains("❌")) {
+                                        MaterialTheme.colorScheme.error
+                                    } else if (logLine.contains("✅")) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
