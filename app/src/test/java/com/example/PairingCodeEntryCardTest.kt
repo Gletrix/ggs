@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performTextInput
 import com.example.ui.PairingCodeEntryCard
 import com.example.ui.theme.MyApplicationTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -86,5 +87,22 @@ class PairingCodeEntryCardTest {
         composeTestRule.onNodeWithTag("submit_pair_button").performClick()
 
         assertEquals("123456", submittedCode)
+    }
+
+    @Test
+    fun testDismissButtonAndCloseIcon() {
+        var dismissed = false
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                PairingCodeEntryCard(
+                    onPairSubmit = {},
+                    onDismiss = { dismissed = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("card_close_button").assertIsDisplayed().performClick()
+        assertTrue(dismissed)
     }
 }

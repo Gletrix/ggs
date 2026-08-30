@@ -13,12 +13,7 @@ import android.os.IBinder
 import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.dp
@@ -38,11 +33,11 @@ import com.example.MainActivity
 import com.example.ui.theme.MyApplicationTheme
 
 /**
- * Foreground Service that displays the ADB Pairing UI as a system-level overlay
+ * Foreground Service that displays a compact, moveable ADB Pairing UI as a system-level overlay
  * using WindowManager and TYPE_APPLICATION_OVERLAY.
  *
- * This allows the pairing card to remain visible and interactive over the Android
- * Settings > Developer Options > Wireless Debugging screen.
+ * It floats non-modally over Android Settings > Developer Options > Wireless Debugging,
+ * allowing users to see the PIN, drag the card out of the way, and tap anywhere on the screen behind it.
  */
 class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
@@ -94,6 +89,7 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
 
     private var windowManager: WindowManager? = null
     private var overlayComposeView: ComposeView? = null
+    private var currentLayoutParams: WindowManager.LayoutParams? = null
     private var isOverlayAttached = false
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -143,16 +139,25 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
+            val displayMetrics = resources.displayMetrics
+            val cardEstimatedWidthPx = (320 * displayMetrics.density).toInt()
+            val initialX = ((displayMetrics.widthPixels - cardEstimatedWidthPx) / 2).coerceAtLeast(20)
+            val initialY = (displayMetrics.heightPixels * 0.12).toInt()
+
             val layoutParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                         WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                gravity = Gravity.CENTER
+                gravity = Gravity.TOP or Gravity.START
+                x = initialX
+                y = initialY
             }
+
+            currentLayoutParams = layoutParams
 
             val composeView = ComposeView(this).apply {
                 setViewTreeLifecycleOwner(this@AdbOverlayService)
@@ -161,23 +166,21 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
 
                 setContent {
                     MyApplicationTheme {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            PairingCodeEntryCard(
-                                modifier = Modifier.widthIn(max = 420.dp),
-                                initialCode = prefilledCode,
-                                onPairSubmit = { code ->
-                                    handlePairingCodeSubmitted(code)
-                                },
-                                onDismiss = {
-                                    handleOverlayDismissed()
-                                }
-                            )
-                        }
+                        PairingCodeEntryCard(
+                            modifier = Modifier.widthIn(min = 290.dp, max = 330.dp),
+                            initialCode = prefilledCode,
+                            title = "Pairing Code",
+                            description = "Enter 6-digit PIN from Settings",
+                            onDrag = { dx, dy ->
+                                updateOverlayPosition(dx, dy)
+                            },
+                            onPairSubmit = { code ->
+                                handlePairingCodeSubmitted(code)
+                            },
+                            onDismiss = {
+                                handleOverlayDismissed()
+                            }
+                        )
                     }
                 }
             }
@@ -185,10 +188,28 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
             overlayComposeView = composeView
             windowManager?.addView(composeView, layoutParams)
             isOverlayAttached = true
-            Log.i(TAG, "Successfully added ADB pairing overlay view to WindowManager")
+            Log.i(TAG, "Successfully added moveable ADB pairing overlay view to WindowManager")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to attach overlay view to WindowManager", e)
             stopOverlayAndSelf()
+        }
+    }
+
+    private fun updateOverlayPosition(dx: Float, dy: Float) {
+        val lp = currentLayoutParams ?: return
+        val dm = resources.displayMetrics
+        val maxX = dm.widthPixels - 100
+        val maxY = dm.heightPixels - 100
+
+        lp.x = (lp.x + dx.toInt()).coerceIn(0, maxX)
+        lp.y = (lp.y + dy.toInt()).coerceIn(0, maxY)
+
+        try {
+            if (isOverlayAttached && overlayComposeView != null) {
+                windowManager?.updateViewLayout(overlayComposeView, lp)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error moving overlay: ${e.message}")
         }
     }
 
@@ -226,6 +247,7 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
                 Log.w(TAG, "Error removing overlay view: ${e.message}")
             }
             overlayComposeView = null
+            currentLayoutParams = null
             isOverlayAttached = false
         }
     }

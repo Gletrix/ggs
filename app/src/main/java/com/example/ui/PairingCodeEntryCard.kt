@@ -3,6 +3,7 @@ package com.example.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,7 +29,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -52,14 +53,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Floating / Overlay UI for entering the 6-digit Wireless Debugging pairing code.
+ * Compact, movable floating / overlay UI for entering the 6-digit Wireless Debugging pairing code.
  */
 @Composable
 fun PairingCodeEntryCard(
     modifier: Modifier = Modifier,
     initialCode: String = "",
-    title: String = "Wireless Debugging Pairing",
-    description: String = "Enter the 6-digit code shown in Developer options > Pair device with pairing code",
+    title: String = "Pairing Code",
+    description: String? = "Enter 6-digit PIN from Settings",
+    onDrag: ((deltaX: Float, deltaY: Float) -> Unit)? = null,
     onPairSubmit: (code: String) -> Unit,
     onDismiss: (() -> Unit)? = null
 ) {
@@ -75,64 +77,95 @@ fun PairingCodeEntryCard(
 
     Card(
         modifier = modifier
-            .fillMaxWidth()
-            .padding(16.dp)
             .testTag("pairing_code_card"),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        border = CardDefaults.outlinedCardBorder()
     ) {
         Column(
             modifier = Modifier
-                .padding(24.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Drag handle at the top
+            val dragModifier = if (onDrag != null) {
+                Modifier.pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        onDrag(dragAmount.x, dragAmount.y)
+                    }
+                }
+            } else {
+                Modifier
+            }
+
             Box(
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(dragModifier)
+                    .padding(top = 2.dp, bottom = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                )
+            }
+
+            // Header Row (Title & Close Button)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(dragModifier),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleLarge.copy(
+                    style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold
                     ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.Center)
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
                 )
 
                 if (onDismiss != null) {
                     IconButton(
                         onClick = onDismiss,
                         modifier = Modifier
-                            .align(Alignment.CenterEnd)
+                            .size(32.dp)
                             .testTag("card_close_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close overlay",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 8.dp)
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
+            if (!description.isNullOrEmpty()) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Start,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp, bottom = 10.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // 6-digit PIN boxes overlayed on invisible BasicTextField
             Box(
@@ -173,7 +206,7 @@ fun PairingCodeEntryCard(
 
                 // Visual 6-box PIN display
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     for (index in 0 until 6) {
@@ -189,7 +222,7 @@ fun PairingCodeEntryCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Action Buttons
             Row(
@@ -202,11 +235,11 @@ fun PairingCodeEntryCard(
                         onClick = onDismiss,
                         modifier = Modifier
                             .testTag("dismiss_button")
-                            .height(48.dp)
+                            .height(38.dp)
                     ) {
-                        Text("Cancel")
+                        Text("Cancel", style = MaterialTheme.typography.labelLarge)
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                 }
 
                 Button(
@@ -222,11 +255,11 @@ fun PairingCodeEntryCard(
                     ),
                     modifier = Modifier
                         .testTag("submit_pair_button")
-                        .height(48.dp)
+                        .height(38.dp)
                 ) {
                     Text(
                         text = "Pair",
-                        fontWeight = FontWeight.SemiBold
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                     )
                 }
             }
@@ -254,21 +287,21 @@ private fun PinBox(
 
     Box(
         modifier = Modifier
-            .size(width = 44.dp, height = 54.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .size(width = 38.dp, height = 46.dp)
+            .clip(RoundedCornerShape(10.dp))
             .background(backgroundColor)
             .border(
                 width = if (isFocused) 2.dp else 1.dp,
                 color = borderColor,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(10.dp)
             )
             .testTag(testTag),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = digit,
-            style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = 22.sp,
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 19.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
             ),
