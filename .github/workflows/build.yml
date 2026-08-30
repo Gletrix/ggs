@@ -25,7 +25,7 @@ jobs:
         run: |
           if [ ! -f gradlew ]; then
             echo "gradlew script not found. Generating wrapper via system Gradle..."
-            gradle wrapper --gradle-version 8.11.1
+            gradle wrapper --gradle-version 9.3.1
           fi
 
       - name: Grant executable permissions
