@@ -265,11 +265,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                             isConsoleModeOn = true
                             currentStep = "Console Mode Enabled"
                             executionSuccess = true
-                            AdbOverlayService.startConsoleModeOverlay(context)
-                            context.packageManager.getLaunchIntentForPackage(selectedPackage)?.let {
-                                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                context.startActivity(it)
-                            }
+
                         }
                         addLog("✅ Console Mode enabled successfully.")
                     } else {
@@ -282,7 +278,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                             isConsoleModeOn = false
                             currentStep = "Console Mode Disabled"
                             executionSuccess = true
-                            AdbOverlayService.stop(context)
+
                         }
                         addLog("✅ Console Mode disabled successfully.")
                     } else {
@@ -297,7 +293,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                     executionSuccess = false
                     if (!enable) {
                         isConsoleModeOn = false // Reset state on error to allow retry
-                        AdbOverlayService.stop(context)
+
                     }
                 }
             } finally {
@@ -458,13 +454,10 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
             Log.i("MainActivity", "Pairing code received via Dialog Activity: $code")
             executePairingFlow(code)
         }
-        AdbOverlayService.onExitConsoleModeCallback = {
-            toggleConsoleMode(false, null)
-        }
+
         onDispose {
             AdbOverlayService.onPairingCodeSubmittedCallback = null
             PairingDialogActivity.onPairingCodeSubmittedCallback = null
-            AdbOverlayService.onExitConsoleModeCallback = null
             mdnsDiscoveryManager.stopDiscovery()
             sessionManager.close()
         }
@@ -618,6 +611,25 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                 )
                 
                 Spacer(modifier = Modifier.height(8.dp))
+                
+                Button(
+                    onClick = {
+                        selectedGamePackage?.let { pkg ->
+                            context.packageManager.getLaunchIntentForPackage(pkg)?.let { intent ->
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                            } ?: run {
+                                Toast.makeText(context, "Cannot launch app", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = selectedGamePackage != null
+                ) {
+                    Text("LAUNCH GAME")
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

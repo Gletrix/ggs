@@ -313,13 +313,10 @@ class AdbSessionManager(
         val commands = listOf(
             "wm size 720x1600",
             "wm density 270",
-            "cmd power set-fixed-performance-mode true",
-            "settings put system peak_refresh_rate 120.0",
-            "settings put system min_refresh_rate 120.0",
+            "settings put system peak_refresh_rate 90.0",
+            "settings put system min_refresh_rate 90.0",
             "settings put global cached_apps_freezer enabled",
-            "settings put global disable_window_blurs 1",
-            "settings put global zen_mode 1",
-            "cmd game mode performance $targetPackageName"
+            "settings put global zen_mode 1"
         )
         for (cmd in commands) {
             val res = executeShellCommand(cmd, host, port)
@@ -335,9 +332,7 @@ class AdbSessionManager(
         val commands = listOf(
             "wm size reset",
             "wm density reset",
-            "cmd power set-fixed-performance-mode false",
             "settings put system min_refresh_rate 60.0",
-            "settings put global disable_window_blurs 0",
             "settings put global zen_mode 0"
         )
         for (cmd in commands) {

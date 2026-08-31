@@ -43,6 +43,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -63,7 +64,8 @@ fun PairingCodeEntryCard(
     description: String? = "Enter 6-digit PIN from Settings",
     onDrag: ((deltaX: Float, deltaY: Float) -> Unit)? = null,
     onPairSubmit: (code: String) -> Unit,
-    onDismiss: (() -> Unit)? = null
+    onDismiss: (() -> Unit)? = null,
+    onFocusChanged: ((Boolean) -> Unit)? = null
 ) {
     var pairingCode by remember { mutableStateOf(initialCode.take(6).filter { it.isDigit() }) }
     val focusRequester = remember { FocusRequester() }
@@ -199,6 +201,7 @@ fun PairingCodeEntryCard(
                     ),
                     modifier = Modifier
                         .focusRequester(focusRequester)
+                        .onFocusChanged { state -> onFocusChanged?.invoke(state.isFocused) }
                         .testTag("pairing_code_input")
                         .size(1.dp)
                         .background(Color.Transparent)
