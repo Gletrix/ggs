@@ -312,7 +312,7 @@ class AdbSessionManager(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val commands = listOf(
             "wm size 720x1600",
-            "wm density 270",
+            "wm density 288",
             "settings put system peak_refresh_rate 90.0",
             "settings put system min_refresh_rate 90.0",
             "settings put global cached_apps_freezer enabled",
@@ -330,8 +330,8 @@ class AdbSessionManager(
         port: Int
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val commands = listOf(
-            "wm size reset",
-            "wm density reset",
+            "wm size 1080x2400",
+            "wm density 432",
             "settings put system min_refresh_rate 60.0",
             "settings put global zen_mode 0"
         )

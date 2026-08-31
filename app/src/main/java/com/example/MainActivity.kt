@@ -39,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -631,19 +632,29 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
+                Text("CONSOLE MODE CONTROLS", style = MaterialTheme.typography.labelLarge)
+                Spacer(modifier = Modifier.height(8.dp))
+                
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("CONSOLE MODE", style = MaterialTheme.typography.labelLarge)
-                    Switch(
-                        checked = isConsoleModeOn,
-                        onCheckedChange = { enable ->
-                            toggleConsoleMode(enable, selectedGamePackage)
-                        },
-                        enabled = !isExecuting
-                    )
+                    Button(
+                        onClick = { toggleConsoleMode(true, selectedGamePackage) },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        enabled = !isExecuting && !isConsoleModeOn,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Turn ON", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+                    }
+                    
+                    OutlinedButton(
+                        onClick = { toggleConsoleMode(false, selectedGamePackage) },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        enabled = !isExecuting && isConsoleModeOn,
+                    ) {
+                        Text("Turn OFF", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+                    }
                 }
             }
         }
