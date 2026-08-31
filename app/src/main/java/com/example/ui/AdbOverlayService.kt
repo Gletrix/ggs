@@ -31,6 +31,22 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.example.MainActivity
 import com.example.ui.theme.MyApplicationTheme
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
 
 /**
  * Foreground Service that displays a compact, moveable ADB Pairing UI as a system-level overlay
@@ -52,6 +68,12 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
         const val ACTION_PAIRING_CODE_SUBMITTED = "com.example.action.PAIRING_CODE_SUBMITTED"
         const val EXTRA_SUBMITTED_CODE = "extra_submitted_code"
 
+        const val MODE_PAIRING = 0
+        const val MODE_CONSOLE = 1
+        const val EXTRA_MODE = "extra_mode"
+
+        var onExitConsoleModeCallback: (() -> Unit)? = null
+
         /**
          * Global callback for in-process pairing code notification.
          */
@@ -68,9 +90,22 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
         fun start(context: Context, prefilledCode: String? = null) {
             val intent = Intent(context, AdbOverlayService::class.java).apply {
                 action = ACTION_START_OVERLAY
+                putExtra(EXTRA_MODE, MODE_PAIRING)
                 if (prefilledCode != null) {
                     putExtra(EXTRA_PREFILLED_CODE, prefilledCode)
                 }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun startConsoleModeOverlay(context: Context) {
+            val intent = Intent(context, AdbOverlayService::class.java).apply {
+                action = ACTION_START_OVERLAY
+                putExtra(EXTRA_MODE, MODE_CONSOLE)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -125,12 +160,13 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
         }
 
         val prefilledCode = intent?.getStringExtra(EXTRA_PREFILLED_CODE) ?: ""
-        showOverlay(prefilledCode)
+        val overlayMode = intent?.getIntExtra(EXTRA_MODE, MODE_PAIRING) ?: MODE_PAIRING
+        showOverlay(prefilledCode, overlayMode)
 
         return START_NOT_STICKY
     }
 
-    private fun showOverlay(prefilledCode: String) {
+    private fun showOverlay(prefilledCode: String, overlayMode: Int) {
         if (isOverlayAttached && overlayComposeView != null) {
             Log.d(TAG, "Overlay is already attached.")
             return
@@ -166,21 +202,56 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
 
                 setContent {
                     MyApplicationTheme {
-                        PairingCodeEntryCard(
-                            modifier = Modifier.widthIn(min = 290.dp, max = 330.dp),
-                            initialCode = prefilledCode,
-                            title = "Pairing Code",
-                            description = "Enter 6-digit PIN from Settings",
-                            onDrag = { dx, dy ->
-                                updateOverlayPosition(dx, dy)
-                            },
-                            onPairSubmit = { code ->
-                                handlePairingCodeSubmitted(code)
-                            },
-                            onDismiss = {
-                                handleOverlayDismissed()
+                        if (overlayMode == MODE_CONSOLE) {
+                            Card(
+                                modifier = Modifier
+                                    .padding(8.dp)
+                                    .pointerInput(Unit) {
+                                        detectDragGestures { change, dragAmount ->
+                                            change.consume()
+                                            updateOverlayPosition(dragAmount.x, dragAmount.y)
+                                        }
+                                    },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = {
+                                            val launchIntent = Intent(this@AdbOverlayService, MainActivity::class.java).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                                            }
+                                            startActivity(launchIntent)
+                                            onExitConsoleModeCallback?.invoke()
+                                            stopOverlayAndSelf()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                    ) {
+                                        Text("EXIT CONSOLE MODE")
+                                    }
+                                }
                             }
-                        )
+                        } else {
+                            PairingCodeEntryCard(
+                                modifier = Modifier.widthIn(min = 290.dp, max = 330.dp),
+                                initialCode = prefilledCode,
+                                title = "Pairing Code",
+                                description = "Enter 6-digit PIN from Settings",
+                                onDrag = { dx, dy ->
+                                    updateOverlayPosition(dx, dy)
+                                },
+                                onPairSubmit = { code ->
+                                    handlePairingCodeSubmitted(code)
+                                },
+                                onDismiss = {
+                                    handleOverlayDismissed()
+                                }
+                            )
+                        }
                     }
                 }
             }

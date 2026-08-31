@@ -305,6 +305,48 @@ class AdbSessionManager(
         return setScreenSizeAndVerify(host, service.port, width, height)
     }
 
+    suspend fun enableConsoleMode(
+        host: String,
+        port: Int,
+        targetPackageName: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val commands = listOf(
+            "wm size 720x1600",
+            "wm density 270",
+            "cmd power set-fixed-performance-mode true",
+            "settings put system peak_refresh_rate 120.0",
+            "settings put system min_refresh_rate 120.0",
+            "settings put global cached_apps_freezer enabled",
+            "settings put global disable_window_blurs 1",
+            "settings put global zen_mode 1",
+            "cmd game mode performance $targetPackageName"
+        )
+        for (cmd in commands) {
+            val res = executeShellCommand(cmd, host, port)
+            if (res.isFailure) return@withContext Result.failure(res.exceptionOrNull()!!)
+        }
+        Result.success(Unit)
+    }
+
+    suspend fun disableConsoleMode(
+        host: String,
+        port: Int
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val commands = listOf(
+            "wm size reset",
+            "wm density reset",
+            "cmd power set-fixed-performance-mode false",
+            "settings put system min_refresh_rate 60.0",
+            "settings put global disable_window_blurs 0",
+            "settings put global zen_mode 0"
+        )
+        for (cmd in commands) {
+            val res = executeShellCommand(cmd, host, port)
+            if (res.isFailure) return@withContext Result.failure(res.exceptionOrNull()!!)
+        }
+        Result.success(Unit)
+    }
+
     /**
      * Reads all bytes from an AdbStream until closed or EOF.
      */

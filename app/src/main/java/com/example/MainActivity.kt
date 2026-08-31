@@ -75,6 +75,9 @@ import com.example.ui.PairingDialogActivity
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import com.example.ui.GameSelector
+import androidx.compose.material3.Switch
+import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -176,13 +179,134 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
     var finalResult by remember { mutableStateOf<WmSizeResult?>(null) }
     val logs = remember { mutableStateListOf<String>() }
 
+    var isConsoleModeOn by remember { mutableStateOf(false) }
+    var selectedGamePackage by remember { mutableStateOf<String?>(null) }
+    var installedGames by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            val pm = context.packageManager
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val resolveInfos = pm.queryIntentActivities(intent, 0)
+            val games = resolveInfos.map {
+                it.loadLabel(pm).toString() to it.activityInfo.packageName
+            }.distinctBy { it.second }.sortedBy { it.first }
+            withContext(Dispatchers.Main) {
+                installedGames = games
+                if (games.isNotEmpty()) {
+                    selectedGamePackage = games[0].second
+                }
+            }
+        }
+    }
+
     fun addLog(message: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         logs.add("[$time] $message")
         Log.i("MainActivity", "[$time] $message")
     }
 
-    fun executePairingAndResizeFlow(code: String) {
+    fun toggleConsoleMode(enable: Boolean, selectedPackage: String?) {
+        if (enable && selectedPackage == null) {
+            Toast.makeText(context, "Select a game first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        isExecuting = true
+        executionSuccess = null
+        finalResult = null
+        logs.clear()
+        
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                if (enable) {
+                    addLog("Enabling Console Mode for $selectedPackage...")
+                    withContext(Dispatchers.Main) { currentStep = "Enabling Console Mode..." }
+                } else {
+                    addLog("Disabling Console Mode...")
+                    withContext(Dispatchers.Main) { currentStep = "Disabling Console Mode..." }
+                }
+
+                // Locate connect service
+                mdnsDiscoveryManager.startDiscovery(discoverPairing = false, discoverConnect = true)
+                var connectService = mdnsDiscoveryManager.discoveryState.value.connectServices.firstOrNull()
+                if (connectService == null) {
+                    connectService = withTimeoutOrNull(10000L) {
+                        mdnsDiscoveryManager.serviceEvents.first { it.serviceType == AdbServiceType.CONNECT }
+                    }
+                }
+                
+                if (connectService == null) {
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: mDNS connect service discovery timeout"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    return@launch
+                }
+                
+                val connectHost = connectService.hostAddress ?: connectService.host?.hostAddress ?: "127.0.0.1"
+                val connectPort = connectService.port
+                
+                val connResult = sessionManager.connect(connectHost, connectPort)
+                if (connResult.isFailure) {
+                    withContext(Dispatchers.Main) {
+                        currentStep = "Failed: ADB connection error"
+                        isExecuting = false
+                        executionSuccess = false
+                    }
+                    return@launch
+                }
+                
+                if (enable) {
+                    val result = sessionManager.enableConsoleMode(connectHost, connectPort, selectedPackage!!)
+                    if (result.isSuccess) {
+                        withContext(Dispatchers.Main) {
+                            isConsoleModeOn = true
+                            currentStep = "Console Mode Enabled"
+                            executionSuccess = true
+                            AdbOverlayService.startConsoleModeOverlay(context)
+                            context.packageManager.getLaunchIntentForPackage(selectedPackage)?.let {
+                                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(it)
+                            }
+                        }
+                        addLog("✅ Console Mode enabled successfully.")
+                    } else {
+                        throw result.exceptionOrNull()!!
+                    }
+                } else {
+                    val result = sessionManager.disableConsoleMode(connectHost, connectPort)
+                    if (result.isSuccess) {
+                        withContext(Dispatchers.Main) {
+                            isConsoleModeOn = false
+                            currentStep = "Console Mode Disabled"
+                            executionSuccess = true
+                            AdbOverlayService.stop(context)
+                        }
+                        addLog("✅ Console Mode disabled successfully.")
+                    } else {
+                        throw result.exceptionOrNull()!!
+                    }
+                }
+            } catch (e: Exception) {
+                addLog("❌ Unexpected error: ${e.localizedMessage}")
+                withContext(Dispatchers.Main) {
+                    currentStep = "Failed: Exception"
+                    isExecuting = false
+                    executionSuccess = false
+                    if (!enable) {
+                        isConsoleModeOn = false // Reset state on error to allow retry
+                        AdbOverlayService.stop(context)
+                    }
+                }
+            } finally {
+                withContext(Dispatchers.Main) { isExecuting = false }
+            }
+        }
+    }
+
+    fun executePairingFlow(code: String) {
         lastSubmittedCode = code
         isExecuting = true
         executionSuccess = null
@@ -292,34 +416,9 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                 }
 
                 addLog("✅ Authenticated TLS ADB session established")
-
-                // Step 4: Executing wm size 720x1600...
+                
                 withContext(Dispatchers.Main) {
-                    currentStep = "Executing wm size 720x1600..."
-                }
-                addLog("Executing wm size 720x1600...")
-
-                val sizeResult = sessionManager.setScreenSizeAndVerify(connectHost, connectPort, 720, 1600)
-                if (sizeResult.isFailure) {
-                    val err = sizeResult.exceptionOrNull()?.message ?: "wm size command failed"
-                    addLog("❌ $err")
-                    withContext(Dispatchers.Main) {
-                        currentStep = "Failed: Command error"
-                        isExecuting = false
-                        executionSuccess = false
-                    }
-                    mdnsDiscoveryManager.stopDiscovery()
-                    return@launch
-                }
-
-                val wmRes = sizeResult.getOrThrow()
-                addLog("Stdout: ${wmRes.applyOutput.ifBlank { "(empty)" }}")
-                addLog("Verification: ${wmRes.verificationOutput}")
-                addLog("✅ Screen resized to 720x1600 successfully!")
-
-                withContext(Dispatchers.Main) {
-                    finalResult = wmRes
-                    currentStep = "Completed Successfully"
+                    currentStep = "Paired and Connected Successfully"
                     isExecuting = false
                     executionSuccess = true
                 }
@@ -353,15 +452,19 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
     DisposableEffect(Unit) {
         AdbOverlayService.onPairingCodeSubmittedCallback = { code ->
             Log.i("MainActivity", "Pairing code received via System Overlay: $code")
-            executePairingAndResizeFlow(code)
+            executePairingFlow(code)
         }
         PairingDialogActivity.onPairingCodeSubmittedCallback = { code ->
             Log.i("MainActivity", "Pairing code received via Dialog Activity: $code")
-            executePairingAndResizeFlow(code)
+            executePairingFlow(code)
+        }
+        AdbOverlayService.onExitConsoleModeCallback = {
+            toggleConsoleMode(false, null)
         }
         onDispose {
             AdbOverlayService.onPairingCodeSubmittedCallback = null
             PairingDialogActivity.onPairingCodeSubmittedCallback = null
+            AdbOverlayService.onExitConsoleModeCallback = null
             mdnsDiscoveryManager.stopDiscovery()
             sessionManager.close()
         }
@@ -441,7 +544,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
             PairingCodeEntryCard(
                 onPairSubmit = { code ->
                     showInlineCard = false
-                    executePairingAndResizeFlow(code)
+                    executePairingFlow(code)
                 },
                 onDismiss = {
                     showInlineCard = false
@@ -491,6 +594,44 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                         .testTag("show_pairing_card_button")
                 ) {
                     Text("Inline PIN Card", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Console Mode Controls
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Gaming Console Mode",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                
+                GameSelector(
+                    installedGames = installedGames,
+                    selectedGamePackage = selectedGamePackage,
+                    onGameSelected = { selectedGamePackage = it }
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("CONSOLE MODE", style = MaterialTheme.typography.labelLarge)
+                    Switch(
+                        checked = isConsoleModeOn,
+                        onCheckedChange = { enable ->
+                            toggleConsoleMode(enable, selectedGamePackage)
+                        },
+                        enabled = !isExecuting
+                    )
                 }
             }
         }
