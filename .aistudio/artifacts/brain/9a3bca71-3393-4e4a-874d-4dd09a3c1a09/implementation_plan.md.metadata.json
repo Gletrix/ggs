@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for adding multi-option screen resizing (480p, 540p, 720p, 1080p) with immediate-apply segmented toggle chips and automatic device aspect ratio scaling, removing the previous go-back/turn-off button workflow.",
+  "updatedAt":  "2026-10-25T00:25:38.597068622Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

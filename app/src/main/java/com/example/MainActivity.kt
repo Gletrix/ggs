@@ -39,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -78,6 +79,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import com.example.ui.GameSelector
 import androidx.compose.material3.Switch
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import com.example.adb.ResolutionPreset
+import com.example.adb.ResolutionScaler
+import com.example.adb.ScaledResolution
 import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -164,6 +170,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
+    val prefs = context.getSharedPreferences("console_mode_prefs", android.content.Context.MODE_PRIVATE)
 
     val keyStorageManager = remember { AdbKeyStorageManager(context) }
     val mdnsDiscoveryManager = remember { AdbMdnsDiscoveryManager(context) }
@@ -180,8 +187,10 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
     var finalResult by remember { mutableStateOf<WmSizeResult?>(null) }
     val logs = remember { mutableStateListOf<String>() }
 
-    var isConsoleModeOn by remember { mutableStateOf(false) }
-    var selectedGamePackage by remember { mutableStateOf<String?>(null) }
+    val savedPresetLabel = prefs.getString("SELECTED_RESOLUTION_PRESET", ResolutionPreset.P720.label)
+    var selectedPreset by remember { mutableStateOf(ResolutionPreset.fromLabel(savedPresetLabel)) }
+    var activeScaledResolution by remember { mutableStateOf<ScaledResolution?>(null) }
+    var selectedGamePackage by remember { mutableStateOf<String?>(prefs.getString("SELECTED_GAME_PACKAGE", null)) }
     var installedGames by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
     LaunchedEffect(Unit) {
@@ -194,8 +203,12 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
             }.distinctBy { it.second }.sortedBy { it.first }
             withContext(Dispatchers.Main) {
                 installedGames = games
-                if (games.isNotEmpty()) {
+                val savedPkg = prefs.getString("SELECTED_GAME_PACKAGE", null)
+                if (savedPkg != null && games.any { it.second == savedPkg }) {
+                    selectedGamePackage = savedPkg
+                } else if (games.isNotEmpty() && selectedGamePackage == null) {
                     selectedGamePackage = games[0].second
+                    prefs.edit().putString("SELECTED_GAME_PACKAGE", games[0].second).apply()
                 }
             }
         }
@@ -207,28 +220,28 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
         Log.i("MainActivity", "[$time] $message")
     }
 
-    fun toggleConsoleMode(enable: Boolean, selectedPackage: String?) {
-        if (enable && selectedPackage == null) {
-            Toast.makeText(context, "Select a game first", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
+    fun applyPreset(preset: ResolutionPreset) {
+        selectedPreset = preset
+        prefs.edit().putString("SELECTED_RESOLUTION_PRESET", preset.label).apply()
+
         isExecuting = true
         executionSuccess = null
         finalResult = null
         logs.clear()
-        
+
+        val displayMetrics = context.resources.displayMetrics
+        val baseWidth = displayMetrics.widthPixels
+        val baseHeight = displayMetrics.heightPixels
+        val baseDensity = displayMetrics.densityDpi
+
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                if (enable) {
-                    addLog("Enabling Console Mode for $selectedPackage...")
-                    withContext(Dispatchers.Main) { currentStep = "Enabling Console Mode..." }
-                } else {
-                    addLog("Disabling Console Mode...")
-                    withContext(Dispatchers.Main) { currentStep = "Disabling Console Mode..." }
+                addLog("Switching screen resolution to ${preset.label}...")
+                withContext(Dispatchers.Main) {
+                    currentStep = "Applying ${preset.label} Resolution..."
                 }
 
-                // Locate connect service
+                // Locate connect service via mDNS
                 mdnsDiscoveryManager.startDiscovery(discoverPairing = false, discoverConnect = true)
                 var connectService = mdnsDiscoveryManager.discoveryState.value.connectServices.firstOrNull()
                 if (connectService == null) {
@@ -236,7 +249,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                         mdnsDiscoveryManager.serviceEvents.first { it.serviceType == AdbServiceType.CONNECT }
                     }
                 }
-                
+
                 if (connectService == null) {
                     withContext(Dispatchers.Main) {
                         currentStep = "Failed: mDNS connect service discovery timeout"
@@ -245,10 +258,10 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                     }
                     return@launch
                 }
-                
+
                 val connectHost = connectService.hostAddress ?: connectService.host?.hostAddress ?: "127.0.0.1"
                 val connectPort = connectService.port
-                
+
                 val connResult = sessionManager.connect(connectHost, connectPort)
                 if (connResult.isFailure) {
                     withContext(Dispatchers.Main) {
@@ -258,44 +271,41 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                     }
                     return@launch
                 }
-                
-                if (enable) {
-                    val result = sessionManager.enableConsoleMode(connectHost, connectPort, selectedPackage!!)
-                    if (result.isSuccess) {
-                        withContext(Dispatchers.Main) {
-                            isConsoleModeOn = true
-                            currentStep = "Console Mode Enabled"
-                            executionSuccess = true
 
-                        }
-                        addLog("✅ Console Mode enabled successfully.")
-                    } else {
-                        throw result.exceptionOrNull()!!
+                val result = sessionManager.applyResolutionPreset(
+                    host = connectHost,
+                    port = connectPort,
+                    preset = preset,
+                    baseWidth = baseWidth,
+                    baseHeight = baseHeight,
+                    baseDensity = baseDensity
+                ) { logMsg ->
+                    coroutineScope.launch(Dispatchers.Main) { addLog(logMsg) }
+                }
+
+                if (result.isSuccess) {
+                    val scaled = result.getOrNull()!!
+                    withContext(Dispatchers.Main) {
+                        activeScaledResolution = scaled
+                        currentStep = "${preset.label} Applied (${scaled.sizeString} @ ${scaled.density}dpi)"
+                        executionSuccess = true
+                        finalResult = WmSizeResult(
+                            executedCommand = "wm size ${scaled.sizeString}",
+                            applyOutput = "Density: ${scaled.density}dpi",
+                            verificationOutput = "Physical render: ${scaled.sizeString} (Aspect Ratio: ${String.format(Locale.US, "%.2f", scaled.aspectRatio)}:1)",
+                            isVerified = true
+                        )
                     }
+                    addLog("✅ Resolution successfully set to ${preset.label} (${scaled.sizeString} @ ${scaled.density}dpi).")
                 } else {
-                    val result = sessionManager.disableConsoleMode(connectHost, connectPort)
-                    if (result.isSuccess) {
-                        withContext(Dispatchers.Main) {
-                            isConsoleModeOn = false
-                            currentStep = "Console Mode Disabled"
-                            executionSuccess = true
-
-                        }
-                        addLog("✅ Console Mode disabled successfully.")
-                    } else {
-                        throw result.exceptionOrNull()!!
-                    }
+                    throw result.exceptionOrNull() ?: RuntimeException("Failed to apply resolution")
                 }
             } catch (e: Exception) {
-                addLog("❌ Unexpected error: ${e.localizedMessage}")
+                addLog("❌ Unexpected error: ${e.localizedMessage ?: e.javaClass.simpleName}")
                 withContext(Dispatchers.Main) {
                     currentStep = "Failed: Exception"
                     isExecuting = false
                     executionSuccess = false
-                    if (!enable) {
-                        isConsoleModeOn = false // Reset state on error to allow retry
-
-                    }
                 }
             } finally {
                 withContext(Dispatchers.Main) { isExecuting = false }
@@ -594,25 +604,117 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Console Mode Controls
+        // Screen Resizing & Gaming Mode Controls
         Card(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("resolution_resizing_card"),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Screen Resizing",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+
+                    androidx.compose.material3.Badge(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ) {
+                        Text(
+                            text = "ACTIVE: ${selectedPreset.label}",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .testTag("active_resolution_badge")
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Gaming Console Mode",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    text = "Tap any preset to scale display resolution immediately. Dimensions automatically match your screen's aspect ratio.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Multi-option segmented chips: 480p, 540p, 720p, 1080p
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ResolutionPreset.entries.forEach { preset ->
+                        val isSelected = selectedPreset == preset
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                if (!isExecuting) {
+                                    applyPreset(preset)
+                                }
+                            },
+                            label = {
+                                Text(
+                                    text = preset.label,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                                .testTag("resolution_chip_${preset.label.lowercase()}"),
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                labelColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(
+                                enabled = true,
+                                selected = isSelected,
+                                borderColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                            )
+                        )
+                    }
+                }
+
+                activeScaledResolution?.let { res ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Current Render Target: ${res.sizeString} @ ${res.density} DPI (Aspect ratio: ${String.format(Locale.US, "%.2f", res.aspectRatio)}:1)",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("render_target_info")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Gaming Target (Optional)",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
                 GameSelector(
                     installedGames = installedGames,
                     selectedGamePackage = selectedGamePackage,
-                    onGameSelected = { selectedGamePackage = it }
+                    onGameSelected = { 
+                        selectedGamePackage = it 
+                        prefs.edit().putString("SELECTED_GAME_PACKAGE", it).apply()
+                    }
                 )
-                
+
                 Spacer(modifier = Modifier.height(8.dp))
-                
+
                 Button(
                     onClick = {
                         selectedGamePackage?.let { pkg ->
@@ -624,37 +726,12 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("launch_game_button"),
                     enabled = selectedGamePackage != null
                 ) {
                     Text("LAUNCH GAME")
-                }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Text("CONSOLE MODE CONTROLS", style = MaterialTheme.typography.labelLarge)
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Button(
-                        onClick = { toggleConsoleMode(true, selectedGamePackage) },
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        enabled = !isExecuting && !isConsoleModeOn,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) {
-                        Text("Turn ON", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-                    }
-                    
-                    OutlinedButton(
-                        onClick = { toggleConsoleMode(false, selectedGamePackage) },
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        enabled = !isExecuting && isConsoleModeOn,
-                    ) {
-                        Text("Turn OFF", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
-                    }
                 }
             }
         }
@@ -796,7 +873,7 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Execution Logs",
+                        text = "ADB Command Log",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -811,12 +888,15 @@ fun PairingDemoScreen(modifier: Modifier = Modifier) {
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                val logScrollState = rememberScrollState()
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(max = 240.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                         .padding(10.dp)
+                        .verticalScroll(logScrollState)
                 ) {
                     if (logs.isEmpty()) {
                         Text(

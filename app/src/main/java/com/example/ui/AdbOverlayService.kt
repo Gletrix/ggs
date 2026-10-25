@@ -212,13 +212,13 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
                                             updateOverlayPosition(dragAmount.x, dragAmount.y)
                                         }
                                     },
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
                             ) {
                                 Row(
                                     modifier = Modifier.padding(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                    Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Button(
                                         onClick = {
@@ -229,9 +229,9 @@ class AdbOverlayService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedS
                                             onExitConsoleModeCallback?.invoke()
                                             stopOverlayAndSelf()
                                         },
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                                     ) {
-                                        Text("EXIT CONSOLE MODE")
+                                        Text("OPEN RESIZER")
                                     }
                                 }
                             }

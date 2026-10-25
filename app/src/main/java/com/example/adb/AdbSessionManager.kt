@@ -305,10 +305,86 @@ class AdbSessionManager(
         return setScreenSizeAndVerify(host, service.port, width, height)
     }
 
+    suspend fun queryPhysicalDisplay(host: String, port: Int): Pair<Int, Int>? {
+        val res = executeShellCommand("wm size", host, port)
+        if (res.isSuccess) {
+            val out = res.getOrNull() ?: ""
+            val match = Regex("""Physical size:\s*(\d+)x(\d+)""").find(out)
+            if (match != null) {
+                val w = match.groupValues[1].toIntOrNull()
+                val h = match.groupValues[2].toIntOrNull()
+                if (w != null && h != null) return Pair(w, h)
+            }
+        }
+        return null
+    }
+
+    suspend fun queryPhysicalDensity(host: String, port: Int): Int? {
+        val res = executeShellCommand("wm density", host, port)
+        if (res.isSuccess) {
+            val out = res.getOrNull() ?: ""
+            val match = Regex("""Physical density:\s*(\d+)""").find(out)
+            if (match != null) {
+                return match.groupValues[1].toIntOrNull()
+            }
+        }
+        return null
+    }
+
+    suspend fun applyResolutionPreset(
+        host: String,
+        port: Int,
+        preset: ResolutionPreset,
+        baseWidth: Int,
+        baseHeight: Int,
+        baseDensity: Int,
+        onLog: (String) -> Unit = {}
+    ): Result<ScaledResolution> = withContext(Dispatchers.IO) {
+        val physicalSize = queryPhysicalDisplay(host, port)
+        val actualBaseWidth = physicalSize?.first ?: baseWidth
+        val actualBaseHeight = physicalSize?.second ?: baseHeight
+
+        val physicalDensity = queryPhysicalDensity(host, port)
+        val actualBaseDensity = physicalDensity ?: baseDensity
+
+        val scaled = ResolutionScaler.calculateScaledResolution(
+            preset = preset,
+            baseWidth = actualBaseWidth,
+            baseHeight = actualBaseHeight,
+            baseDensity = actualBaseDensity
+        )
+
+        val commands = listOf(
+            "wm size ${scaled.width}x${scaled.height}",
+            "wm density ${scaled.density}",
+            "settings put system peak_refresh_rate 90.0",
+            "settings put system min_refresh_rate 90.0",
+            "settings put global cached_apps_freezer enabled",
+            "settings put global zen_mode 1"
+        )
+
+        commands.forEachIndexed { index, cmd ->
+            val step = index + 1
+            val total = commands.size
+            val res = executeShellCommand(cmd, host, port)
+            if (res.isSuccess) {
+                val output = res.getOrNull()?.trim() ?: ""
+                val outStr = if (output.isNotEmpty()) " -> OK ($output)" else " -> OK"
+                onLog("[$step/$total] $cmd$outStr")
+            } else {
+                val err = res.exceptionOrNull()?.message ?: "Unknown error"
+                onLog("[$step/$total] $cmd -> FAILED: $err")
+                return@withContext Result.failure(res.exceptionOrNull() ?: RuntimeException(err))
+            }
+        }
+        Result.success(scaled)
+    }
+
     suspend fun enableConsoleMode(
         host: String,
         port: Int,
-        targetPackageName: String
+        targetPackageName: String,
+        onLog: (String) -> Unit = {}
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val commands = listOf(
             "wm size 720x1600",
@@ -318,16 +394,27 @@ class AdbSessionManager(
             "settings put global cached_apps_freezer enabled",
             "settings put global zen_mode 1"
         )
-        for (cmd in commands) {
+        commands.forEachIndexed { index, cmd ->
+            val step = index + 1
+            val total = commands.size
             val res = executeShellCommand(cmd, host, port)
-            if (res.isFailure) return@withContext Result.failure(res.exceptionOrNull()!!)
+            if (res.isSuccess) {
+                val output = res.getOrNull()?.trim() ?: ""
+                val outStr = if (output.isNotEmpty()) " -> OK ($output)" else " -> OK"
+                onLog("[$step/$total] $cmd$outStr")
+            } else {
+                val err = res.exceptionOrNull()?.message ?: "Unknown error"
+                onLog("[$step/$total] $cmd -> FAILED: $err")
+                return@withContext Result.failure(res.exceptionOrNull()!!)
+            }
         }
         Result.success(Unit)
     }
 
     suspend fun disableConsoleMode(
         host: String,
-        port: Int
+        port: Int,
+        onLog: (String) -> Unit = {}
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val commands = listOf(
             "wm size 1080x2400",
@@ -335,9 +422,19 @@ class AdbSessionManager(
             "settings put system min_refresh_rate 60.0",
             "settings put global zen_mode 0"
         )
-        for (cmd in commands) {
+        commands.forEachIndexed { index, cmd ->
+            val step = index + 1
+            val total = commands.size
             val res = executeShellCommand(cmd, host, port)
-            if (res.isFailure) return@withContext Result.failure(res.exceptionOrNull()!!)
+            if (res.isSuccess) {
+                val output = res.getOrNull()?.trim() ?: ""
+                val outStr = if (output.isNotEmpty()) " -> OK ($output)" else " -> OK"
+                onLog("[$step/$total] $cmd$outStr")
+            } else {
+                val err = res.exceptionOrNull()?.message ?: "Unknown error"
+                onLog("[$step/$total] $cmd -> FAILED: $err")
+                return@withContext Result.failure(res.exceptionOrNull()!!)
+            }
         }
         Result.success(Unit)
     }
